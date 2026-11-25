@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lane-trans"
+version = "0.1.0"
+description = "Remove small loops from lane-centerline FlatGeobuf files: input.fgb -> output.fgb"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "geopandas>=1.0",
+    "networkx>=3.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "shapely>=2.0",
+]
+
+[project.optional-dependencies]
+web = ["flask>=3.0"]                      # lane-trans-web
+viz = ["matplotlib>=3.7", "pillow>=10"]   # scripts/
+dev = ["pytest>=8", "flask>=3.0"]
+
+[project.scripts]
+lane-trans = "lane_trans.cli:main"
+lane-trans-web = "lane_trans.web.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"lane_trans.web" = ["static/*", "example_graph.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
