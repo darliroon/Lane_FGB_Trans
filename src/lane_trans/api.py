@@ -59,14 +59,15 @@ def read_input(path):
 
 
 def convert(input_path, output_path, kernel=DEFAULT_KERNEL, *,
-            max_loop_len=None, connector_margin=None, parallel_ratio=None):
+            max_loop_len=None, connector_margin=None, parallel_ratio=None,
+            max_loop_width=None):
     """Read input_path (.fgb), remove its small loops with `kernel`, write output_path (.fgb).
 
     The keyword thresholds override the defaults in params.Params. Returns a Report.
     """
     run = get_kernel(kernel)
     given = dict(max_loop_len=max_loop_len, connector_margin=connector_margin,
-                 parallel_ratio=parallel_ratio)
+                 parallel_ratio=parallel_ratio, max_loop_width=max_loop_width)
     params = Params(**{k: float(v) for k, v in given.items() if v is not None})
     src, dst = Path(input_path), Path(output_path)
     if dst.resolve() == src.resolve():

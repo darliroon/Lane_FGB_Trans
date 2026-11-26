@@ -25,7 +25,7 @@ HERE = Path(__file__).resolve().parent
 EXAMPLE = HERE / "example_graph.json"
 MAX_NODES = 5000
 ORIGIN = (0.0, 0.0)   # the page already works in local metres, so log coordinates need no offset
-PARAM_NAMES = ("max_loop_len", "connector_margin", "parallel_ratio")
+PARAM_NAMES = ("max_loop_len", "connector_margin", "parallel_ratio", "max_loop_width")
 
 
 class InvalidGraph(ValueError):
@@ -69,8 +69,12 @@ def parse_graph(data):
 def parse_params(p):
     p = p or {}
     defaults = Params()
+    vals = {}
     try:
-        vals = {k: float(p.get(k, getattr(defaults, k))) for k in PARAM_NAMES}
+        for k in PARAM_NAMES:
+            v = p.get(k, getattr(defaults, k))
+            # max_loop_width has no default; null / "" / absent all mean "no width limit"
+            vals[k] = None if v is None or v == "" else float(v)
     except (TypeError, ValueError) as e:
         raise InvalidGraph(f"malformed params: {e!r}")
     try:

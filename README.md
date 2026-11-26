@@ -75,6 +75,7 @@ FlatGeobuf 按空间索引顺序存放要素，读回来的 `Id` 顺序不是 1.
 | `max_loop_len` / `--max-loop-len` | 200 m | 双连通分量总长超过它的环视为真实环（环岛等），不动 |
 | `connector_margin` / `--connector-margin` | 0.10 | 仅 `v0`。连接线判据的余量 |
 | `parallel_ratio` / `--parallel-ratio` | 1.5 | 平行链里比最短的长出这个倍数的，直接丢弃而不是取平均 |
+| `max_loop_width` / `--max-loop-width` | 不限制 | 宽于它的环、自环链、平行链都视为真实道路（环岛、双向分离的两条车道线），不动。宽度 = 最小外接矩形的短边 |
 
 ## 新增一个内核
 

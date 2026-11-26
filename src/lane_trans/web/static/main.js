@@ -3,7 +3,7 @@ import { Pane } from "./pane.js";
 import { EditorPane } from "./editor.js";
 
 const $ = (id) => document.getElementById(id);
-const PARAMS = ["max_loop_len", "connector_margin", "parallel_ratio"];
+const PARAMS = ["max_loop_len", "connector_margin", "parallel_ratio", "max_loop_width"];
 let defaults = {}, result = null, resultLog = [], busy = false;
 
 const redrawBoth = () => { editor.draw(); output.draw(); };
@@ -148,7 +148,7 @@ window.addEventListener("keydown", (e) => {
   try {
     const cfg = await (await fetch("/api/config")).json();
     defaults = cfg.defaults;
-    PARAMS.forEach((k) => { $("p_" + k).value = defaults[k]; });
+    PARAMS.forEach((k) => { $("p_" + k).value = defaults[k] ?? ""; });
     $("example").disabled = !cfg.example;
   } catch { setMsg("无法连接服务器，请确认 app.py 正在运行", true); }
   onInputChange();

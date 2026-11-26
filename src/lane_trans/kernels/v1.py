@@ -76,7 +76,7 @@ def make_cut(variant):
     pick = PICKS[variant]
 
     def cut(C, origin, params):
-        hit = pick(C, *small_loops(C, params.max_loop_len))
+        hit = pick(C, *small_loops(C, params.max_loop_len, params.max_loop_width))
         if hit is None:
             return None
         u, v, k, note = hit

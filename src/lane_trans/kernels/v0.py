@@ -40,7 +40,7 @@ def superfluous(C, u, v, k, d):
 
 def cut(C, origin, params):
     """Delete one chain of one small loop -> log line, or None if there is no small loop."""
-    H, comps = small_loops(C, params.max_loop_len)
+    H, comps = small_loops(C, params.max_loop_len, params.max_loop_width)
     cands = []  # (u, v, k, superfluous_at_u, superfluous_at_v)
     for comp in comps:
         for u, v in comp:

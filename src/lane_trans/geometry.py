@@ -1,12 +1,29 @@
 """Polyline helpers. A polyline is an (n, 2) float array in projected metres."""
 import numpy as np
-from shapely.geometry import LineString
+from shapely.geometry import LineString, MultiPoint
 
 TANGENT_SPAN = 1.5   # m; polyline length used to estimate the direction of a chain end
 
 
 def length(p):
     return float(np.linalg.norm(np.diff(p, axis=0), axis=1).sum())
+
+
+def width(p):
+    """Short side of the minimum rotated rectangle around the polyline = how wide it is.
+
+    A straight line or a closed ring gives its lateral extent; 0 for a collinear polyline.
+    """
+    r = MultiPoint([tuple(q) for q in p]).minimum_rotated_rectangle
+    if r.geom_type != "Polygon":
+        return 0.0
+    c = np.asarray(r.exterior.coords)
+    return float(min(np.linalg.norm(c[1] - c[0]), np.linalg.norm(c[2] - c[1])))
+
+
+def too_wide(lines, limit):
+    """True if `limit` is set and the polylines together are wider than it."""
+    return limit is not None and width(np.vstack(lines)) > limit
 
 
 def resample(p, m):

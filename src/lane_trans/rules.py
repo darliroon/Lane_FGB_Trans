@@ -9,7 +9,8 @@ from .chains import fmt
 def remove_self_loop(C, origin, params):
     """A chain that starts and ends at the same junction -> delete."""
     for u, v, k, d in C.edges(keys=True, data=True):
-        if u == v and C.degree(u) > 2 and geo.length(d["pts"]) <= params.max_loop_len:
+        if (u == v and C.degree(u) > 2 and geo.length(d["pts"]) <= params.max_loop_len
+                and not geo.too_wide([d["pts"]], params.max_loop_width)):
             C.remove_edge(u, v, k)
             return f"self-loop   at {fmt(u, origin)} lanes={sorted(d['src'])} L={geo.length(d['pts']):.1f}"
     return None
@@ -28,6 +29,8 @@ def merge_parallel(C, origin, params):
         lines = [geo.orient(d["pts"], a) for _, _, _, d in es]
         lens = [geo.length(l) for l in lines]
         if sorted(lens)[0] + sorted(lens)[1] > params.max_loop_len:
+            continue
+        if geo.too_wide(lines, params.max_loop_width):
             continue
         # a chain much longer than the shortest is a different route, not a duplicate
         keep = [l for l, L in zip(lines, lens) if L <= params.parallel_ratio * min(lens)]

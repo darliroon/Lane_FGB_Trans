@@ -65,12 +65,13 @@ def dissolve(C):
             changed = True
 
 
-def small_loops(C, max_loop_len):
+def small_loops(C, max_loop_len, max_loop_width=None):
     """-> (H, comps).
 
     H     simple graph of the chains, edge attributes k (multigraph key) and w (length).
     comps edge lists of every biconnected component with >= 3 chains and total length
-          <= max_loop_len, i.e. every loop small enough to be an artefact.
+          <= max_loop_len, i.e. every loop small enough to be an artefact, and (if
+          max_loop_width is set) no wider than it. A wider loop is a real ring.
     """
     H = nx.Graph()
     for u, v, k, d in C.edges(keys=True, data=True):
@@ -79,6 +80,8 @@ def small_loops(C, max_loop_len):
     for comp in nx.biconnected_component_edges(H):
         comp = list(comp)
         if len(comp) < 3 or sum(H[u][v]["w"] for u, v in comp) > max_loop_len:
+            continue
+        if geo.too_wide([C[u][v][H[u][v]["k"]]["pts"] for u, v in comp], max_loop_width):
             continue
         comps.append(comp)
     return H, comps

@@ -18,7 +18,8 @@ def example(client):
 
 def test_config_lists_defaults_and_kernels(client):
     j = client.get("/api/config").get_json()
-    assert j["defaults"] == {"max_loop_len": 200.0, "connector_margin": 0.1, "parallel_ratio": 1.5}
+    assert j["defaults"] == {"max_loop_len": 200.0, "connector_margin": 0.1, "parallel_ratio": 1.5,
+                             "max_loop_width": None}
     assert "v0" in j["kernels"] and "v1" in j["kernels"] and j["kernel"] == "v0"
 
 
@@ -48,6 +49,18 @@ def test_params_are_applied(client, example):
     assert j["stats"]["after"]["loops"] == j["stats"]["before"]["loops"]
 
 
+def test_max_loop_width_is_applied(client, example):
+    wide = client.post("/api/convert", json={**example, "params": {"max_loop_width": 1}}).get_json()
+    none = client.post("/api/convert", json={**example, "params": {"max_loop_width": None}}).get_json()
+    assert wide["stats"]["after"]["loops"] > none["stats"]["after"]["loops"]
+
+
+def test_max_loop_width_accepts_an_empty_string_as_no_limit(client, example):
+    a = client.post("/api/convert", json={**example, "params": {"max_loop_width": ""}}).get_json()
+    b = client.post("/api/convert", json=example).get_json()
+    assert a["stats"] == b["stats"]
+
+
 def test_empty_graph(client):
     r = client.post("/api/convert", json={"nodes": [], "edges": []})
     assert r.status_code == 200 and r.get_json()["graph"] == {"nodes": [], "edges": []}
@@ -57,6 +70,7 @@ def test_empty_graph(client):
     ({"nodes": [{"id": 1, "x": 0, "y": 0}], "edges": [{"source": 1, "target": 9}]}, "unknown node"),
     ({"nodes": [], "edges": [], "params": {"parallel_ratio": 0.5}}, "parallel_ratio"),
     ({"nodes": [], "edges": [], "params": {"max_loop_len": "nan"}}, "finite"),
+    ({"nodes": [], "edges": [], "params": {"max_loop_width": 0}}, "max_loop_width"),
     ({"nodes": [], "edges": [], "kernel": "nope"}, "unknown kernel"),
     ({"nodes": [], "edges": [], "kernel": ["x"]}, "unknown kernel"),
     ({"nodes": [{"id": 1, "x": "a", "y": 0}], "edges": []}, "malformed"),

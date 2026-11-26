@@ -1,6 +1,9 @@
 """Loop-removal rules on small hand-made graphs and on data/start.fgb (kernel v0)."""
 import networkx as nx
+import numpy as np
+import pytest
 
+from lane_trans import geometry as geo
 from lane_trans.chains import chains_to_graph, to_chains
 from lane_trans.graph import load_vertex_graph, snap_dangles
 from lane_trans.kernels import get_kernel
@@ -107,3 +110,112 @@ def test_parallel_bundle_is_averaged_not_deleted():
 def test_empty_graph_is_fine():
     _, log, Gr = simplify(nx.Graph())
     assert log == [] and Gr.number_of_nodes() == 0
+
+
+# ------------------------------------------------------------------ width limit
+def _ring(n, w, d, center=(0.0, 0.0)):
+    """n-node ring, w wide and d long, as a closed polygon cycle."""
+    cx, cy = center
+    pts = [(cx - w / 2, cy - d / 2), (cx + w / 2, cy - d / 2),
+           (cx + w / 2, cy + d / 2), (cx - w / 2, cy + d / 2)]
+    if n == 1:   # a single self-loop chain: out along one side, back along the other
+        return [(cx - w / 2, cy - d / 2), (cx - w / 2, cy + d / 2),
+                (cx + w / 2, cy + d / 2), (cx + w / 2, cy - d / 2), (cx - w / 2, cy - d / 2)]
+    return pts
+
+
+def test_width_of_a_straight_line_is_zero():
+    assert geo.width(np.array([(0.0, 0.0), (10.0, 0.0)])) < 1e-9
+
+
+def test_width_is_the_short_side_of_the_ring():
+    pts = np.array(_ring(4, 3.0, 20.0))
+    assert abs(geo.width(pts) - 3.0) < 1e-6
+
+
+def test_width_is_rotation_invariant():
+    th = np.deg2rad(37.0)
+    R = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    pts = np.array(_ring(4, 3.0, 20.0)) @ R.T
+    assert abs(geo.width(pts) - 3.0) < 1e-6
+
+
+def test_wide_self_loop_is_kept_when_max_width_is_small():
+    """A loop wider than max_loop_width is a real ring (roundabout), not an artefact."""
+    G = nx.Graph()
+    loop = _ring(1, 30.0, 30.0)
+    for a, b in zip(loop, loop[1:]):
+        G.add_edge(a, b, src={1})
+    G.add_edge((0.0, -15.0), (0.0, -30.0), src={2})       # one exit: a 1-chain self-loop
+    _, log, Gr = simplify(G, params=Params(max_loop_width=5.0))
+    assert log == [] and len(nx.cycle_basis(Gr)) == 1
+
+
+def test_narrow_self_loop_is_removed_when_max_width_is_small():
+    G = nx.Graph()
+    loop = _ring(1, 3.0, 30.0)
+    for a, b in zip(loop, loop[1:]):
+        G.add_edge(a, b, src={1})
+    G.add_edge((-1.5, -15.0), (-1.5, -30.0), src={2})
+    _, log, Gr = simplify(G, params=Params(max_loop_width=5.0))
+    assert any(line.startswith("self-loop") for line in log)
+    assert len(nx.cycle_basis(Gr)) == 0
+
+
+def _parallel_pair(off):
+    """Two chains between the same two junctions, `off` metres either side of the axis."""
+    G = nx.Graph()
+    for i, o in enumerate((-off, off)):
+        G.add_edge((1000.0, 0.0), (1000.0 + o, 10.0), src={i})
+        G.add_edge((1000.0 + o, 10.0), (1000.0, 20.0), src={i})
+    G.add_edge((1000.0, 0.0), (1000.0, -10.0), src={9})    # junctions at both ends
+    G.add_edge((1000.0, 20.0), (1000.0, 30.0), src={9})
+    return G
+
+
+def test_wide_parallel_bundle_is_kept_when_max_width_is_small():
+    """Two lanes 6 m apart are a divided road, not duplicate geometry."""
+    C, log, _ = simplify(_parallel_pair(3.0), params=Params(max_loop_width=5.0))
+    assert log == []
+    assert C.number_of_edges() == 4            # the two lanes both survive, plus the two exits
+
+
+def test_narrow_parallel_bundle_is_merged_when_max_width_is_small():
+    C, log, Gr = simplify(_parallel_pair(0.5), params=Params(max_loop_width=5.0))
+    assert any(line.startswith("parallel") for line in log)
+    assert stats(Gr)["loops"] == 0
+    assert C.number_of_edges() == 1            # one lane; with no junction left it is all one chain
+
+
+def test_wide_three_chain_loop_is_kept_when_max_width_is_small():
+    G = nx.Graph()
+    ring = _ring(3, 20.0, 40.0)
+    for a, b in zip(ring, ring[1:] + ring[:1]):
+        G.add_edge(a, b, src={1})
+    G.add_edge((-10.0, 0.0), (-20.0, 0.0), src={2})
+    G.add_edge((10.0, 0.0), (20.0, 0.0), src={3})
+    G.add_edge((0.0, 20.0), (0.0, 30.0), src={4})
+    _, log, Gr = simplify(G, params=Params(max_loop_width=5.0))
+    assert log == [] and len(nx.cycle_basis(Gr)) == 1
+
+
+def test_params_rejects_a_non_positive_max_loop_width():
+    with pytest.raises(ValueError):
+        Params(max_loop_width=0.0)
+    with pytest.raises(ValueError):
+        Params(max_loop_width=float("nan"))
+    assert Params(max_loop_width=None).max_loop_width is None
+
+
+def test_start_fgb_with_5m_width_limit_keeps_the_wide_loops(start, origin):
+    """start.fgb: the 10.4 m loop and the 5.7 m bundle survive a 5 m width limit.
+
+    Everything else is still handled, so the 3 remaining cycles are exactly:
+    the wide 6-chain loop, the duplicate pair inside it, and lanes 32/33.
+    """
+    G, _ = load_vertex_graph(start)
+    _, log, Gr = simplify(G, origin, params=Params(max_loop_width=5.0))
+    assert not any("(94.6,52.8)-(88.9,53.6)" in line for line in log)   # the wide loop
+    assert not any("(83.3,15.1)-(84.6,35.5)" in line for line in log)   # lanes 32/33
+    assert any(line.startswith("parallel") and "(56.7,41.6)-(58.2,54.3)" in line for line in log)
+    assert stats(Gr)["loops"] == 3

@@ -20,6 +20,8 @@ def build_parser():
     ap.add_argument("--max-loop-len", type=float, help=f"metres (default {d.max_loop_len:g})")
     ap.add_argument("--connector-margin", type=float, help=f"v0 only (default {d.connector_margin:g})")
     ap.add_argument("--parallel-ratio", type=float, help=f"default {d.parallel_ratio:g}")
+    ap.add_argument("--max-loop-width", type=float,
+                    help="metres; wider loops are real rings (default: no limit)")
     ap.add_argument("--target", help="reference .fgb; print how close the output is to it")
     ap.add_argument("-q", "--quiet", action="store_true", help="do not print the per-step log")
     return ap
@@ -29,7 +31,8 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         rep = convert(args.input, args.output, args.kernel, max_loop_len=args.max_loop_len,
-                      connector_margin=args.connector_margin, parallel_ratio=args.parallel_ratio)
+                      connector_margin=args.connector_margin, parallel_ratio=args.parallel_ratio,
+                      max_loop_width=args.max_loop_width)
     except (ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

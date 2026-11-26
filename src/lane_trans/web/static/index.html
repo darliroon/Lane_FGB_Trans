@@ -108,6 +108,7 @@
       <div class="param"><div>最大环长 (m)<small>环的连通块总长不超过它才处理</small></div><input id="p_max_loop_len" type="number" step="any" min="0"></div>
       <div class="param"><div>连接裕度<small>两端“多余”分数都低于它才判为横插连接线</small></div><input id="p_connector_margin" type="number" step="0.05" min="0" max="1"></div>
       <div class="param"><div>平行链比例<small>比最短链长出此倍数的不参与平均</small></div><input id="p_parallel_ratio" type="number" step="0.1" min="1"></div>
+      <div class="param"><div>环宽上限 (m)<small>宽于它的环、自环、平行链视为真实道路，不动。留空 = 不限制</small></div><input id="p_max_loop_width" type="number" step="0.5" min="0" placeholder="不限制"></div>
       <button id="resetParams">恢复默认</button>
     </div>
     <div class="card">
