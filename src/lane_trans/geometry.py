@@ -43,8 +43,13 @@ def average(lines):
 
 
 def orient(p, start):
-    """p, reversed if needed so that it begins at `start`."""
-    return p if np.allclose(p[0], start, rtol=0, atol=1e-6) else p[::-1]
+    """p, reversed if needed so that it begins at `start`.
+
+    Same test as np.allclose(p[0], start, rtol=0, atol=1e-6) without its call overhead;
+    this runs once per incident chain at every junction, so the overhead used to dominate.
+    """
+    d = p[0] - start
+    return p if -1e-6 <= d[0] <= 1e-6 and -1e-6 <= d[1] <= 1e-6 else p[::-1]
 
 
 def tangent(p, span=TANGENT_SPAN):

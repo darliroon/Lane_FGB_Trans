@@ -1,7 +1,7 @@
 # lane_trans
 
 把车道中心线里的**小环**消掉：输入一个 FlatGeobuf（`input.fgb`），输出一个 FlatGeobuf（`output.fgb`）。
-消环的算法叫**内核**（kernel），目前有 `v0` 和 `v1`；换内核只改一个参数，文件接口不变。
+消环的算法叫**内核**（kernel），目前有 `v0`、`v1` 和 `v2`；换内核只改一个参数，文件接口不变。
 
 ```bash
 lane-trans data/start.fgb output.fgb                  # 默认内核 v0
@@ -47,8 +47,13 @@ FlatGeobuf 按空间索引顺序存放要素，读回来的 `Id` 顺序不是 1.
 | `v1:shortest` | 最短的链 | 同上 |
 | `v1:longest` | 最长的链 | 同上 |
 | `v1:hausdorff` | 备选路径与它 Hausdorff 距离最小的链 | 同上 |
+| `v2` | 与 `v0` 相同的判断，增量地算：只重算改动碰到的节点、平行链和双连通块 | [kernels/v2.py](src/lane_trans/kernels/v2.py) |
 
-所有内核共用同一个前端（吸附悬挂端点、删自环、平行链取平均），只在“怎么剪断剩下的环”上不同。算法细节见 [docs/algorithms.md](docs/algorithms.md)。
+所有内核共用同一个前端（吸附悬挂端点、删自环、平行链取平均），只在“怎么剪断剩下的环”上不同。
+
+**`v2` 产出的路网和 `v0` 相同**：每条链的端点、携带的输入车道、折线几何都一致，留下的环和悬挂端点也一样，
+`tests/test_kernels.py` 按几何锁住了这一点。差别只在表述层面（日志里独立改动的先后顺序、完全平局时的取舍）。
+速度上 528 条车道快 11 倍，2112 条车道快 80 倍，8448 条车道 2.6 秒（`v0` 超过 5 分钟）。算法细节见 [docs/algorithms.md](docs/algorithms.md)。
 
 在 `data/start.fgb`（33 条车道，11 个环）对 `data/target.fgb`（人工修改结果）上的对比，覆盖率按 0.5 m 缓冲计：
 
@@ -60,7 +65,7 @@ FlatGeobuf 按空间索引顺序存放要素，读回来的 `Id` 顺序不是 1.
 | `v1:longest` | 0.925 | 0.885 | 3.31 m |
 | `v1:hausdorff` | 0.901 | 0.859 | 6.28 m |
 
-五个内核都把环数降到 0，并保留全部 13 个悬挂端点。**这只是一个约 100 m 路段的样本**，不能当作通用排名；
+五个内核都把环数降到 0，并保留全部 13 个悬挂端点（`v2` 与 `v0` 输出相同，不单列）。**这只是一个约 100 m 路段的样本**，不能当作通用排名；
 默认内核是 `v0`，因为它在这份数据上两个方向的覆盖率都 ≥ 0.9 且 Hausdorff 最小。想改默认值，改 [api.py](src/lane_trans/api.py) 里的 `DEFAULT_KERNEL`。
 
 **v0 是冻结的基线。** `tests/test_kernels.py::test_v0_output_matches_the_frozen_v0_result` 把它在 `start.fgb` 上的输出锁在
@@ -83,7 +88,7 @@ FlatGeobuf 按空间索引顺序存放要素，读回来的 `Id` 顺序不是 1.
 共用前端已经封装在 `pipeline.simplify`，你只需要提供“剪哪条链”的 `cut`：
 
 ```python
-# src/lane_trans/kernels/v2.py
+# src/lane_trans/kernels/v3.py
 from ..chains import fmt, small_loops
 from ..pipeline import simplify
 from .registry import register
@@ -91,16 +96,16 @@ from .registry import register
 
 def cut(C, origin, params):
     """Delete one chain of one small loop; return its log line, or None if no small loop is left."""
-    H, comps = small_loops(C, params.max_loop_len)
+    H, comps = small_loops(C, params.max_loop_len, params.max_loop_width)
     ...
 
 
-@register("v2")
+@register("v3")
 def run(C, origin, params, on_step=None):
     return simplify(C, origin, params, cut, on_step)
 ```
 
-然后在 [kernels/\_\_init\_\_.py](src/lane_trans/kernels/__init__.py) 的 import 行加上 `v2`。命令行的 `--kernel` 选项、web 接口和 `tests/test_kernels.py`
+然后在 [kernels/\_\_init\_\_.py](src/lane_trans/kernels/__init__.py) 的 import 行加上 `v3`。命令行的 `--kernel` 选项、web 接口和 `tests/test_kernels.py`
 里按全部内核参数化的用例（环全部消除、悬挂端点保留、空输入）都会自动覆盖它。
 
 ## 目录结构
