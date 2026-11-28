@@ -219,3 +219,48 @@ def test_start_fgb_with_5m_width_limit_keeps_the_wide_loops(start, origin):
     assert not any("(83.3,15.1)-(84.6,35.5)" in line for line in log)   # lanes 32/33
     assert any(line.startswith("parallel") and "(56.7,41.6)-(58.2,54.3)" in line for line in log)
     assert stats(Gr)["loops"] == 3
+
+
+# ------------------------------------------------------------------ snapping: STRtree and the crash fix
+def test_snap_matches_a_brute_force_scan_on_random_graphs():
+    """The STRtree lookup must find exactly what scanning every edge found, in the same order."""
+    import random
+    import lane_trans.graph as gr
+
+    random.seed(7)
+    for _ in range(200):
+        G = nx.Graph()
+        pts = [(round(random.uniform(0, 10), 3), round(random.uniform(0, 10), 3)) for _ in range(10)]
+        for i in range(0, 8, 2):
+            G.add_edge(pts[i], pts[i + 1], src={i})
+        segs = list(G.edges)
+        for sid, _ in enumerate(range(random.randint(2, 8)), start=10):
+            a, b = random.choice(segs)
+            t = random.random()
+            off = random.choice([0.0, 0.02, 0.049, 0.05, 0.051])
+            base = (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]))
+            tip = gr.key((base[0] + off, base[1]))
+            far = gr.key((tip[0] + 3.0, tip[1] + 3.0))
+            if tip != far and tip not in G:
+                G.add_edge(tip, far, src={sid})
+        A, B = G.copy(), G.copy()
+        try:
+            n_old = gr._snap_dangles_brute(A)
+        except ValueError:
+            continue   # the old implementation cannot handle this graph; covered below
+        assert gr.snap_dangles(B) == n_old
+        assert set(A.nodes) == set(B.nodes)
+        assert {frozenset(e) for e in A.edges} == {frozenset(e) for e in B.edges}
+        assert all(A[a][b]["src"] == B[a][b]["src"] for a, b in A.edges)
+
+
+def test_snap_does_not_crash_when_a_tip_stops_being_dangling():
+    """Three lanes: an earlier snap makes another tip degree 2. This used to raise ValueError."""
+    G = nx.Graph()
+    G.add_edge((6.704, 10.128), (6.976, 6.241), src={0})
+    G.add_edge((6.752, 9.885), (5.868, 8.837), src={1})
+    G.add_edge((6.753, 9.888), (9.319, 12.707), src={2})
+    before = G.number_of_nodes()
+    assert snap_dangles(G) == 1          # must not raise
+    assert G.number_of_nodes() == before - 1   # that tip was moved onto the other lane
+    assert all(G.degree(n) >= 1 for n in G)
