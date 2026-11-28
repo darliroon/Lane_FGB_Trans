@@ -1,25 +1,25 @@
-"""v2: v0's rules, evaluated incrementally.
+"""v2: v0's rules, evaluated incrementally. Same decisions, same output, much less work.
 
-v0 changes one chain per round and then recomputes everything: every degree-2 node, every
-parallel bundle, every biconnected component, every candidate's score. That is O(N) work per
-round and O(N) rounds. v2 applies the same rules but only re-examines what a change touched:
+v0 changes one chain per round and then recomputes the whole graph: every degree-2 node,
+every parallel bundle, every biconnected component, every candidate's score. That is O(N)
+work per round and O(N) rounds. v2 applies the same rules but only re-examines what a change
+touched:
 
-  dissolve / self-loop / parallel  worklists of the nodes and node pairs a change touched
+  dissolve / self-loop / parallel  only the nodes and node pairs the last change touched
   loops                            biconnected components kept per block; after a change only
-                                   the blocks that contain a touched node are recomputed
-  scores                           connector scores are computed once per block, Hausdorff
-                                   distances lazily and once per block
+                                   the blocks on a touched edge are rebuilt
+  scores                           connector scores are computed once per block; a block's
+                                   best Hausdorff candidate is computed lazily, once
 
-The decisions are v0's: the same `superfluous` score, the same connector-first-then-Hausdorff
-choice over all small loops, the same thresholds, the same log lines. Every round still runs
-dissolve -> self-loop -> parallel -> cut in that priority order. What can differ from v0:
+Every round still runs dissolve -> self-loop -> parallel -> cut in that order, and every
+choice is made by the same shared functions (`rules.merge_bundle`, `chains.pick_connector`,
+`chains.pick_redundant`) over the same candidate set, in canonical order. Ties are broken by
+`chains.chain_key`, which depends on the geometry only, never on edge insertion order, so the
+two kernels pick the same chain in the same round and the outputs are identical.
 
-  * the order of independent changes in the log (v0 takes the first one in networkx edge
-    order, v2 the first one in its worklist), which does not change the result;
-  * exact ties between two candidates are broken differently;
-  * a self-loop chain that rule 1 left in place (too long, too wide) is ignored when the
-    length of the loops around it is measured. v0 counts it into one neighbouring block,
-    whichever its depth-first search happens to reach.
+The one construct v2 does not keep incrementally is an undeletable self-loop chain (too long
+or too wide to remove by rule 1). v0 counts such a chain into the length of one neighbouring
+block; v2 hands that round to v0's own `cut`, so the accounting stays identical.
 
 Registered as "v2".
 """
@@ -30,85 +30,58 @@ import numpy as np
 from shapely.geometry import LineString
 
 from .. import geometry as geo
-from ..chains import fmt, n_loops, snapshot
+from ..chains import (chain_key, fmt, n_loops, pick_connector, pick_redundant,
+                      snapshot, small_loops)
+from ..pipeline import dissolve as _dissolve_unused  # noqa: F401  (keeps the import graph honest)
+from ..rules import merge_bundle
 from .registry import register
+from .v0 import cut as _v0_cut
 from .v0 import superfluous
-
-_UNSET = object()
-
-
-class _Block:
-    """One biconnected component of the simple chain graph, and what v2 knows about it."""
-    __slots__ = ("edges", "cands", "conn", "h")
-
-    def __init__(self, edges):
-        self.edges = edges    # [(u, v)]
-        self.cands = ()       # [(u, v, k, superfluous_at_u, superfluous_at_v)] if it is a small loop
-        self.conn = None      # the most superfluous connector among cands, or None
-        self.h = _UNSET       # (hausdorff, u, v, k) of its best "redundant" candidate, filled lazily
-
-
-def _hausdorff_to_alternative(C, Hb, u, v, k):
-    """chains.hausdorff_to_alternative, on the block's own graph and without copying it.
-
-    A simple path between two nodes of a biconnected block stays in the block, so searching
-    the block alone finds the same shortest path as searching the whole graph.
-    """
-    view = nx.subgraph_view(Hb, filter_edge=lambda a, b: not ({a, b} == {u, v}))
-    try:
-        path = nx.shortest_path(view, u, v, weight="w")
-    except nx.NetworkXNoPath:
-        return None
-    alt = np.vstack([geo.orient(C[a][b][Hb[a][b]["k"]]["pts"], a)
-                     for a, b in zip(path[:-1], path[1:])])
-    return LineString(C[u][v][k]["pts"]).hausdorff_distance(LineString(alt))
 
 
 class _Net:
-    """Chain graph C plus everything v2 keeps in step with it. All edits go through here."""
+    """The chain graph C and the bookkeeping v2 keeps in step with it.
+
+    Every edit of C goes through this class, so the caches are updated by construction.
+    """
 
     def __init__(self, C, origin, params):
         self.C, self.origin, self.p = C, origin, params
         self.H = nx.Graph()          # simple graph of C without self-loops: k = chain key, w = length
         self.blk = {}                # frozenset({u, v}) -> id of the block that holds that edge
-        self.blocks = {}             # id -> _Block, every block
-        self.live = {}               # id -> _Block, the blocks that are small loops
-        self.stale = set()           # ids of blocks that lost an edge
+        self.blocks = {}             # id -> (edges, cands, connector) for every block
+        self.live = {}               # id -> (edges, cands, connector) for the blocks that are small loops
+        self.stale = set()           # block ids that lost an edge
         self.dirty = set(C.nodes)    # nodes whose chains changed since the blocks were last built
         self.check = set(C.nodes)    # nodes that may now be degree 2
-        self.loops = deque()         # nodes that may carry a removable self-loop
-        self.pairs = deque()         # node pairs that may now be a parallel bundle
-        self.queued = set()
+        self.pend = set()            # frozenset({u, v}): node pairs that may now be a bundle
+        self.selfnodes = set()       # nodes with an undeleted self-loop chain
+        self.hausdorff = {}          # block id -> (hausdorff, u, v, k) or None; dropped on touch
+        self.full = False            # the block structure must be rebuilt from scratch
         self._next = 0
         for u, v, k, d in C.edges(keys=True, data=True):
             if u == v:
-                self.loops.append(u)
+                self.selfnodes.add(u)
             else:
                 self.H.add_edge(u, v, k=k, w=geo.length(d["pts"]))
         for u, v in self.H.edges:
             if C.number_of_edges(u, v) > 1:
-                self._queue_pair(u, v)
+                self.pend.add(frozenset((u, v)))
 
     # ---------------------------------------------------------------- bookkeeping
-    def _queue_pair(self, a, b):
-        pair = frozenset((a, b))
-        if pair not in self.queued:
-            self.queued.add(pair)
-            self.pairs.append(pair)
-
     def _touch(self, a, b):
         """Record that the chains between a and b changed; call after every edit of C."""
         self.dirty.update((a, b))
         self.check.update((a, b))
+        self.hausdorff.clear()
         if a == b:
-            self.loops.append(a)
+            (self.selfnodes.add if self.C.has_edge(a, a) else self.selfnodes.discard)(a)
             return
-        self._queue_pair(a, b)
+        self.pend.add(frozenset((a, b)))
         H, C = self.H, self.C
         if C.has_edge(a, b):
-            keys = C[a][b]
-            k = list(keys)[-1]       # v0 builds H last-one-wins over C.edges(), so does this
-            H.add_edge(a, b, k=k, w=geo.length(keys[k]["pts"]))
+            k = max(C[a][b])         # v0's small_loops builds H in sorted key order; same winner
+            H.add_edge(a, b, k=k, w=geo.length(C[a][b][k]["pts"]))
         elif H.has_edge(a, b):
             H.remove_edge(a, b)
             bid = self.blk.pop(frozenset((a, b)), None)
@@ -118,9 +91,26 @@ class _Net:
                 if H.degree(n) == 0:
                     H.remove_node(n)
 
+    def _reset(self):
+        """Rebuild H and drop all block state; the next _refresh starts from scratch."""
+        C = self.C
+        self.H = nx.Graph()
+        for u, v, k, d in sorted(C.edges(keys=True, data=True), key=lambda e: (e[0], e[1], e[2])):
+            if u != v:
+                self.H.add_edge(u, v, k=k, w=geo.length(d["pts"]))
+        self.blk.clear()
+        self.blocks.clear()
+        self.live.clear()
+        self.stale.clear()
+        self.hausdorff.clear()
+        self.pend = {frozenset((u, v)) for u, v in self.H.edges if C.number_of_edges(u, v) > 1}
+        self.dirty = set(C.nodes)
+        self.check = set(C.nodes)
+        self.full = False
+
     # ---------------------------------------------------------------- rules 0-2
     def dissolve_all(self):
-        """Concatenate the two chains at every degree-2 node (chains.dissolve, on touched nodes)."""
+        """Concatenate the two chains at every degree-2 node (chains.dissolve, incrementally)."""
         C = self.C
         while self.check:
             n = self.check.pop()
@@ -142,53 +132,54 @@ class _Net:
             self._touch(a, b)
 
     def self_loop(self):
-        """rules.remove_self_loop, on touched nodes."""
+        """rules.remove_self_loop: the first qualifying self-loop in canonical order."""
         C, p = self.C, self.p
-        while self.loops:
-            u = self.loops.popleft()
-            if u not in C or not C.has_edge(u, u):
+        hits = []
+        for u in sorted(self.selfnodes):
+            if u not in C or C.degree(u) <= 2:
                 continue
-            for k, d in list(C[u][u].items()):
+            for k, d in C[u][u].items():
                 L = geo.length(d["pts"])
-                if C.degree(u) > 2 and L <= p.max_loop_len \
-                        and not geo.too_wide([d["pts"]], p.max_loop_width):
-                    C.remove_edge(u, u, k)
-                    self._touch(u, u)
-                    return f"self-loop   at {fmt(u, self.origin)} lanes={sorted(d['src'])} L={L:.1f}"
-        return None
+                if L <= p.max_loop_len and not geo.too_wide([d["pts"]], p.max_loop_width):
+                    hits.append((chain_key(u, u, d["pts"]), u, k, d, L))
+        if not hits:
+            return None
+        _, u, k, d, L = min(hits)
+        C.remove_edge(u, u, k)
+        self._touch(u, u)
+        return f"self-loop   at {fmt(u, self.origin)} lanes={sorted(d['src'])} L={L:.1f}"
 
     def parallel(self):
-        """rules.merge_parallel, on touched pairs."""
-        C, p = self.C, self.p
-        while self.pairs:
-            pair = self.pairs.popleft()
-            self.queued.discard(pair)
-            a, b = tuple(pair)
-            if not C.has_edge(a, b) or C.number_of_edges(a, b) < 2:
-                continue
-            es = list(C[a][b].items())
-            lines = [geo.orient(d["pts"], a) for _, d in es]
-            lens = [geo.length(l) for l in lines]
-            s = sorted(lens)
-            if s[0] + s[1] > p.max_loop_len or geo.too_wide(lines, p.max_loop_width):
-                continue
-            keep = [l for l, L in zip(lines, lens) if L <= p.parallel_ratio * min(lens)]
-            src = set().union(*(d["src"] for _, d in es))
-            for k, _ in es:
-                C.remove_edge(a, b, k)
-            C.add_edge(a, b, pts=geo.average(keep), src=src, mod=True)
-            self._touch(a, b)
-            return (f"parallel    {fmt(a, self.origin)}-{fmt(b, self.origin)} {len(es)} chains "
-                    f"(averaged {len(keep)}) lanes={sorted(src)}")
-        return None
+        """rules.merge_parallel: the first mergeable bundle in canonical node-pair order.
+
+        v0 walks the bundles in that same canonical order, so the same bundle is merged first
+        and the two kernels stay in step even when a merge changes a neighbour's chains.
+        """
+        C = self.C
+        while True:
+            for pair in sorted(self.pend, key=lambda g: tuple(sorted(g))):
+                a, b = tuple(sorted(pair))
+                if not C.has_edge(a, b) or C.number_of_edges(a, b) < 2:
+                    self.pend.discard(pair)
+                    continue
+                es = [(a, b, k, d) for k, d in C[a][b].items()]
+                msg = merge_bundle(C, es, self.origin, self.p)
+                if msg is None:
+                    continue
+                self.pend.discard(pair)
+                self._touch(a, b)
+                return msg
+            return None
 
     # ---------------------------------------------------------------- loops
     def _refresh(self):
-        """Rebuild the blocks a change touched. Every other block is exactly as it was.
+        """Rebuild the blocks a change touched; every other block is exactly as it was.
 
         A change can only alter the cycle structure inside the blocks that held the edges it
         removed, and the scores of the blocks that have a chain at a touched node.
         """
+        if self.full:
+            self._reset()            # rebuild everything, then continue as usual
         if not (self.dirty or self.stale):
             return
         H = self.H
@@ -203,9 +194,10 @@ class _Net:
         for bid in ids:
             b = self.blocks.pop(bid, None)
             self.live.pop(bid, None)
+            self.hausdorff.pop(bid, None)
             if b is None:
                 continue
-            for u, v in b.edges:
+            for u, v in b[0]:
                 e = frozenset((u, v))
                 if self.blk.get(e) == bid:
                     del self.blk[e]
@@ -222,61 +214,72 @@ class _Net:
         C, H, p = self.C, self.H, self.p
         bid = self._next
         self._next += 1
-        b = self.blocks[bid] = _Block(edges)
         for u, v in edges:
             self.blk[frozenset((u, v))] = bid
         if len(edges) < 3 or sum(H[u][v]["w"] for u, v in edges) > p.max_loop_len:
+            self.blocks[bid] = (edges, (), None)
             return
         if geo.too_wide([C[u][v][H[u][v]["k"]]["pts"] for u, v in edges], p.max_loop_width):
+            self.blocks[bid] = (edges, (), None)
             return
         cands = []
         for u, v in edges:
             k = H[u][v]["k"]
             su, sv = superfluous(C, u, v, k, C[u][v][k])
             cands.append((u, v, k, su, sv))
-        b.cands = cands
-        conns = [c for c in cands if max(c[3], c[4]) < -p.connector_margin]
-        b.conn = min(conns, key=lambda c: min(c[3], c[4])) if conns else None
-        self.live[bid] = b
+        entry = (edges, tuple(cands), pick_connector(C, cands, p.connector_margin))
+        self.blocks[bid] = entry
+        self.live[bid] = entry
 
-    def _best_redundant(self, b):
-        if b.h is _UNSET:
-            Hb = nx.Graph()
-            for u, v in b.edges:
-                Hb.add_edge(u, v, **self.H[u][v])
-            best = None
-            for u, v, k, _, _ in b.cands:
-                h = _hausdorff_to_alternative(self.C, Hb, u, v, k)
-                if h is not None and (best is None or h < best[0]):
-                    best = (h, u, v, k)
-            b.h = best
-        return b.h
+    def _best_hausdorff(self, bid):
+        if bid in self.hausdorff:
+            return self.hausdorff[bid]
+        entry = self.live[bid]
+        Hb = nx.Graph()
+        for u, v in entry[0]:
+            Hb.add_edge(u, v, **self.H[u][v])
+        best = pick_redundant(self.C, Hb, entry[1])
+        # carry the canonical key so blocks are ranked exactly as v0 ranks candidates
+        ranked = None if best is None else (best[0], chain_key(best[1], best[2],
+                                                               self.C[best[1]][best[2]][best[3]]["pts"]),
+                                            best[1], best[2], best[3])
+        self.hausdorff[bid] = ranked
+        return ranked
 
     def cut(self):
         """v0's cut: the best connector anywhere, else the best Hausdorff candidate anywhere."""
         C = self.C
+        if self.selfnodes:
+            # an undeletable self-loop chain counts into a neighbouring block's length in v0;
+            # let v0 decide this round, then start the incremental state over
+            msg = _v0_cut(C, self.origin, self.p)
+            self.full = True
+            return msg
         self._refresh()
         if not self.live:
             return None
-        conns = [b.conn for b in self.live.values() if b.conn is not None]
+        conns = [e[2] for e in self.live.values() if e[2] is not None]
         if conns:
-            u, v, k, su, sv = min(conns, key=lambda c: min(c[3], c[4]))
+            u, v, k, su, sv = pick_connector(C, conns, self.p.connector_margin)
             d = C[u][v][k]
             C.remove_edge(u, v, k)
             self._touch(u, v)
+            if v < u:
+                u, v, su, sv = v, u, sv, su
             return (f"connector   {fmt(u, self.origin)}-{fmt(v, self.origin)} "
                     f"lanes={sorted(d['src'])} superfluous={su:.2f},{sv:.2f}")
         best = None
-        for b in self.live.values():
-            h = self._best_redundant(b)
-            if h is not None and (best is None or h[0] < best[0]):
+        for bid in self.live:
+            h = self._best_hausdorff(bid)
+            if h is not None and (best is None or h < best):
                 best = h
         if best is None:
             return None
-        h, u, v, k = best
+        h, _, u, v, k = best
         d = C[u][v][k]
         C.remove_edge(u, v, k)
         self._touch(u, v)
+        u, v = sorted((u, v))
         return (f"redundant   {fmt(u, self.origin)}-{fmt(v, self.origin)} "
                 f"lanes={sorted(d['src'])} hausdorff_to_alt={h:.1f}")
 

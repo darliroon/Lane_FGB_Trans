@@ -12,7 +12,7 @@ Every small loop is cut in one chain, picked by two rules in order:
 Registered as "v0".
 """
 from .. import geometry as geo
-from ..chains import fmt, hausdorff_to_alternative, small_loops
+from ..chains import fmt, pick_connector, pick_redundant, small_loops
 from ..pipeline import simplify
 from .registry import register
 
@@ -50,24 +50,23 @@ def cut(C, origin, params):
     if not cands:
         return None
 
-    conns = [c for c in cands if max(c[3], c[4]) < -params.connector_margin]
-    if conns:
-        u, v, k, su, sv = min(conns, key=lambda c: min(c[3], c[4]))
+    hit = pick_connector(C, cands, params.connector_margin)
+    if hit is not None:
+        u, v, k, su, sv = hit
         d = C[u][v][k]
         C.remove_edge(u, v, k)
+        if v < u:                 # canonical direction, so the log does not depend on edge order
+            u, v, su, sv = v, u, sv, su
         return (f"connector   {fmt(u, origin)}-{fmt(v, origin)} lanes={sorted(d['src'])} "
                 f"superfluous={su:.2f},{sv:.2f}")
 
-    best = None
-    for u, v, k, _, _ in cands:
-        h = hausdorff_to_alternative(C, H, u, v, k)
-        if h is not None and (best is None or h < best[0]):
-            best = (h, u, v, k)
+    best = pick_redundant(C, H, cands)
     if best is None:
         return None
     h, u, v, k = best
     d = C[u][v][k]
     C.remove_edge(u, v, k)
+    u, v = sorted((u, v))
     return f"redundant   {fmt(u, origin)}-{fmt(v, origin)} lanes={sorted(d['src'])} hausdorff_to_alt={h:.1f}"
 
 

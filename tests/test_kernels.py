@@ -194,3 +194,55 @@ def test_v2_needs_no_more_steps_than_v0(start):
     G, _ = load_vertex_graph(start)
     (_, _, l0), (_, _, l2) = _run_both(G)
     assert len(l2) <= len(l0)
+
+
+@pytest.mark.parametrize("params", [Params(), Params(max_loop_width=5.0), Params(max_loop_len=40.0),
+                                    Params(connector_margin=0.0)],
+                         ids=["default", "width5", "len40", "margin0"])
+def test_v2_log_matches_v0_line_by_line(start, params):
+    """Including the step order: the two kernels make the same change in the same round."""
+    G, _ = load_vertex_graph(start)
+    (_, _, l0), (_, _, l2) = _run_both(G, params)
+    assert l2 == l0
+
+
+def _final(G, kernel, params=Params()):
+    C = to_chains(G)
+    log = get_kernel(kernel)(C, (0.0, 0.0), params)
+    return _road(C), log
+
+
+def _shuffled(G, rng):
+    """The same graph, edges and endpoints in a different insertion order."""
+    H = nx.Graph()
+    es = list(G.edges(data=True))
+    rng.shuffle(es)
+    for a, b, d in es:
+        if rng.random() < 0.5:
+            a, b = b, a
+        H.add_edge(a, b, **{k: set(v) for k, v in d.items()})
+    return H
+
+
+def test_kernels_give_the_same_answer_whatever_the_edge_order():
+    """Exact ties are broken canonically, so insertion order cannot change the result."""
+    import random
+    rng = random.Random(11)
+    for _ in range(30):
+        G = nx.Graph()
+        grid = [(float(x), float(y)) for x in range(6) for y in range(6)]
+        rng.shuffle(grid)
+        pts = grid[:rng.randint(8, 20)]
+        for i in range(len(pts) - 1):
+            G.add_edge(pts[i], pts[i + 1], src={i})
+        for j in range(rng.randint(0, 6)):
+            a, b = rng.choice(pts), rng.choice(pts)
+            if a != b:
+                G.add_edge(a, b, src={100 + j})
+        H = _shuffled(G, rng)
+        for kernel in ("v0", "v2"):
+            road_a, log_a = _final(G, kernel)
+            road_b, log_b = _final(H, kernel)
+            same, why = _same_road(road_a, road_b)
+            assert same, f"{kernel}: {why}"
+            assert log_b == log_a

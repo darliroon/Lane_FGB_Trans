@@ -5,6 +5,8 @@ Loop removal works on chains, not on vertices. A chain is a nx.MultiGraph edge w
     src  set of input lane Ids it was built from
     mod  True if its geometry was rewritten (averaged)
 """
+import hashlib
+
 import geopandas as gpd
 import networkx as nx
 import numpy as np
@@ -65,6 +67,30 @@ def dissolve(C):
             changed = True
 
 
+def pts_digest(pts):
+    """Stable fingerprint of a polyline, to break ties the same way in every run."""
+    return hashlib.blake2b(np.ascontiguousarray(np.round(pts, 6), dtype=np.float64).tobytes(),
+                           digest_size=8).digest()
+
+
+def chain_key(u, v, pts):
+    """Total order on chains that does not depend on insertion or iteration order.
+
+    Two candidates that score exactly the same are ranked by their endpoints and then by
+    their geometry, so "which tied candidate wins" is a property of the graph, not of the
+    order the edges happen to sit in. Ties between identical chains are indistinguishable.
+    """
+    a, b = (u, v) if u <= v else (v, u)
+    return (a, b, pts_digest(pts))
+
+
+def _epsilon(a, b):
+    """A deterministic per-edge offset in [0, 1e-6], so equal-weight paths have a unique order."""
+    h = (int(round(a[0] * 1000)) * 73856093) ^ (int(round(a[1] * 1000)) * 19349663) \
+        ^ (int(round(b[0] * 1000)) * 83492791) ^ (int(round(b[1] * 1000)) * 2971215073)
+    return (h % 1000) * 1e-9
+
+
 def small_loops(C, max_loop_len, max_loop_width=None):
     """-> (H, comps).
 
@@ -74,7 +100,9 @@ def small_loops(C, max_loop_len, max_loop_width=None):
           max_loop_width is set) no wider than it. A wider loop is a real ring.
     """
     H = nx.Graph()
-    for u, v, k, d in C.edges(keys=True, data=True):
+    # sorted, so that for parallel chains the same one (the largest key) stands for the pair
+    # in every run, whatever order the edges were inserted in
+    for u, v, k, d in sorted(C.edges(keys=True, data=True), key=lambda e: (e[0], e[1], e[2])):
         H.add_edge(u, v, k=k, w=geo.length(d["pts"]))
     comps = []
     for comp in nx.biconnected_component_edges(H):
@@ -96,12 +124,41 @@ def hausdorff_to_alternative(C, H, u, v, k):
     H2 = H.copy()
     H2.remove_edge(u, v)
     try:
-        path = nx.shortest_path(H2, u, v, weight="w")
+        path = nx.shortest_path(H2, u, v,
+                                weight=lambda a, b, d: d["w"] + _epsilon(a, b))
     except nx.NetworkXNoPath:
         return None
     alt = np.vstack([geo.orient(C[a][b][H[a][b]["k"]]["pts"], a)
                      for a, b in zip(path[:-1], path[1:])])
     return LineString(C[u][v][k]["pts"]).hausdorff_distance(LineString(alt))
+
+
+def pick_connector(C, cands, margin):
+    """The most superfluous connector among `cands` [(u, v, k, su, sv)], or None.
+
+    Canonical tie-break, so v0 and v2 choose the same chain from the same candidates.
+    """
+    conns = [c for c in cands if max(c[3], c[4]) < -margin]
+    if not conns:
+        return None
+    return min(conns, key=lambda c: (min(c[3], c[4]),
+                                     chain_key(c[0], c[1], C[c[0]][c[1]][c[2]]["pts"])))
+
+
+def pick_redundant(C, H, cands):
+    """(hausdorff, u, v, k) of the candidate its alternative path explains best, or None."""
+    best = None
+    for u, v, k, _, _ in cands:
+        h = hausdorff_to_alternative(C, H, u, v, k)
+        if h is None:
+            continue
+        cand = (h, chain_key(u, v, C[u][v][k]["pts"]), u, v, k)
+        if best is None or cand < best:
+            best = cand
+    if best is None:
+        return None
+    h, _, u, v, k = best
+    return h, u, v, k
 
 
 def n_loops(C):

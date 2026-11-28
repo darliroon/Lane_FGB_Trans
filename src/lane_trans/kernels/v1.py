@@ -11,7 +11,7 @@ Four variants differ only in which chain of a small loop is deleted:
 Registered as "v1:<variant>" and "v1".
 """
 from .. import geometry as geo
-from ..chains import fmt, hausdorff_to_alternative, small_loops
+from ..chains import chain_key, fmt, hausdorff_to_alternative, small_loops
 from ..pipeline import simplify
 from .registry import KERNELS, register
 
@@ -36,10 +36,11 @@ def continuity(C, u, v, k, d):
 # A pick function chooses the chain to cut: pick(C, H, comps) -> (u, v, k, note), or None.
 def _by_length(choose):
     def pick(C, H, comps):
-        cands = [(H[u][v]["w"], u, v) for comp in comps for u, v in comp]
+        cands = [(H[u][v]["w"], chain_key(u, v, C[u][v][H[u][v]["k"]]["pts"]), u, v)
+                 for comp in comps for u, v in comp]
         if not cands:
             return None
-        w, u, v = choose(cands)
+        w, _, u, v = choose(cands)
         return u, v, H[u][v]["k"], f"L={w:.1f}"
     return pick
 
@@ -50,20 +51,24 @@ def _hausdorff(C, H, comps):
         for u, v in comp:
             k = H[u][v]["k"]
             h = hausdorff_to_alternative(C, H, u, v, k)
-            if h is not None and (best is None or h < best[0]):
-                best = (h, u, v, k)
+            if h is None:
+                continue
+            cand = (h, chain_key(u, v, C[u][v][k]["pts"]), u, v, k)
+            if best is None or cand < best:
+                best = cand
     if best is None:
         return None
-    h, u, v, k = best
+    h, _, u, v, k = best
     return u, v, k, f"hausdorff_to_alt={h:.1f}"
 
 
 def _weakest_tree(C, H, comps):
-    cands = [(continuity(C, u, v, H[u][v]["k"], C[u][v][H[u][v]["k"]]), u, v, H[u][v]["k"])
+    cands = [(continuity(C, u, v, H[u][v]["k"], C[u][v][H[u][v]["k"]]),
+              chain_key(u, v, C[u][v][H[u][v]["k"]]["pts"]), u, v, H[u][v]["k"])
              for comp in comps for u, v in comp]
     if not cands:
         return None
-    c, u, v, k = min(cands)
+    c, _, u, v, k = min(cands)
     return u, v, k, f"continuity={c:+.2f}"
 
 

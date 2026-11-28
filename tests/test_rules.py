@@ -55,7 +55,7 @@ def test_connector_not_through_lane_is_removed(start, origin):
     """start.fgb: the horizontal join at x~90 is a connector, not lane 36."""
     G, _ = load_vertex_graph(start)
     _, log, Gr = simplify(G, origin)
-    assert any(line.startswith("connector") and "(94.6,52.8)-(88.9,53.6)" in line for line in log)
+    assert any(line.startswith("connector") and "(88.9,53.6)-(94.6,52.8)" in line for line in log)
     left = node_near(Gr, origin, 86.34, 51.03, tol=0.1)
     right_top = node_near(Gr, origin, 93.9, 83.47, tol=0.1)
     assert nx.has_path(Gr, left, right_top)  # the two through-lanes survive
@@ -215,7 +215,7 @@ def test_start_fgb_with_5m_width_limit_keeps_the_wide_loops(start, origin):
     """
     G, _ = load_vertex_graph(start)
     _, log, Gr = simplify(G, origin, params=Params(max_loop_width=5.0))
-    assert not any("(94.6,52.8)-(88.9,53.6)" in line for line in log)   # the wide loop
+    assert not any("(88.9,53.6)-(94.6,52.8)" in line for line in log)   # the wide loop
     assert not any("(83.3,15.1)-(84.6,35.5)" in line for line in log)   # lanes 32/33
     assert any(line.startswith("parallel") and "(56.7,41.6)-(58.2,54.3)" in line for line in log)
     assert stats(Gr)["loops"] == 3
